@@ -1,5 +1,7 @@
 # SunairiesOS
 
+<p align="center"><img src="SunairiesOS.jpg" alt="SunairiesOS" width="256"></p>
+
 SunairiesOS is Debian stable without systemd, as an immutable system.
 
 - **Init:** [SystemG (System Generic)](https://github.com/augo23/systemg)

@@ -1,0 +1,6 @@
+# SunairiesOS: once this boot is healthy, keep it (sunairies-check, then
+# sunairies-commit). In the background: the check waits for `boot` itself.
+type = scripted
+command = /bin/sh -c "[ -e /run/sunairies/booted ] || exit 0; setsid /bin/sh -c 'sunairies-check && sunairies-commit' >> /var/log/sunairies.log 2>&1 < /dev/null &"
+depends-on = early
+restart = false

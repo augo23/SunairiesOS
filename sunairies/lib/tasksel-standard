@@ -1,0 +1,31 @@
+#!/bin/sh
+# tasksel-standard - the "standard system utilities" task on SunairiesOS
+#
+# Installed as /usr/lib/tasksel/packages/sunairies-standard, the package list
+# of SunairiesOS's task description (/usr/share/tasksel/descs): Debian's
+# "Packages: standard", which is every package of priority required,
+# important or standard that is not a library and not installed yet, less
+# what SystemG stands in for. Those are the packages apt is pinned never to
+# install (systemd's: /etc/apt/preferences.d/systemg), which apt would
+# refuse, and init, which apt would satisfy with another init system.
+# tasksel still drops anything it cannot find.
+set -eu
+installed=$(mktemp) avail=$(mktemp)
+trap 'rm -f "$installed" "$avail"' EXIT
+dpkg-query -W -f '${Package} ${Status}\n' | awk '/ installed$/ { print $1 }' | sort -u > "$installed"
+apt-cache dumpavail | awk -v RS= '
+  {
+    p = pr = s = ""
+    n = split($0, f, "\n")
+    for (i = 1; i <= n; i++) {
+      if (f[i] ~ /^Package: /) p = substr(f[i], 10)
+      else if (f[i] ~ /^Priority: /) pr = substr(f[i], 11)
+      else if (f[i] ~ /^Section: /) s = substr(f[i], 10)
+    }
+    if (pr ~ /^(required|important|standard)$/ && s !~ /^lib|\//) print p
+  }' | sort -u | comm -23 - "$installed" > "$avail"
+[ -s "$avail" ] || exit 0
+# shellcheck disable=SC2046
+apt-cache policy $(cat "$avail") | awk '
+  /^[^ ].*:$/ { p = substr($1, 1, length($1) - 1) }
+  /^  Candidate: / && $2 != "(none)" && p != "init" { print p }'

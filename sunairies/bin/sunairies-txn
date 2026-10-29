@@ -1,0 +1,141 @@
+#!/bin/sh
+# sunairies-txn - package changes made through apt's library, as a new version
+#
+#   sunairies-txn begin          apt runs it before dpkg (DPkg::Pre-Invoke)
+#   sunairies-txn dpkg ARG...    each dpkg run of the change (the dpkg wrapper)
+#   sunairies-txn end            apt runs it after dpkg (DPkg::Post-Invoke)
+#
+# Programs that change packages through libapt rather than the apt command
+# (KDE Discover and GNOME Software through PackageKit, Synaptic,
+# unattended-upgrades) work out the change themselves, then run dpkg several
+# times. Here all of those dpkg runs go, unchanged, into one writable layer
+# over the version the system runs now, and at the end it becomes a new
+# version: staged for the next start, its programs live right away
+# (sunairies-apply), undone with sunairies-rollback, as with the apt command
+# (sunairies-layer).
+#
+# A change that did not finish (dpkg failed, the program died) is dropped:
+# nothing changed. Outside a running SunairiesOS this does nothing.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+w=$STORE/txn.part
+root=$w/root
+
+[ -e /run/sunairies/booted ] && [ -z "${SUNAIRIES_BUILD:-}" ] || {
+  [ "${1:-}" = dpkg ] && { shift; exec /usr/bin/dpkg.debian "$@"; }
+  exit 0
+}
+
+# umount_under DIR: what is mounted below DIR, deepest first.
+umount_under() {
+  awk -v p="$1/" 'index($5, p) == 1 { print $5 }' /proc/self/mountinfo | sort -r \
+    | while read -r m; do umount -l "$m" 2>/dev/null || true; done
+}
+discard() {
+  umount_under "$w"
+  grep -qF " $w/" /proc/self/mountinfo || rm -rf "$w"
+}
+
+# The version the running system has now: what apt's library sees.
+base_version() {
+  cat /run/sunairies/applied 2>/dev/null || booted
+}
+
+begin() {
+  [ -d "$w" ] && { say "dropping an unfinished change"; discard; }
+  [ ! -d "$STORE/layer.part" ] || die "another change is being made; try again when it is done"
+  b=$(base_version)
+  s=$(staged)
+  [ -z "$s" ] || [ "$s" = "$b" ] \
+    || die "SunairiesOS $s is waiting for a restart; restart first, then change packages"
+  mkdir -p "$w/l" "$w/upper" "$w/work" "$root"
+  # All or nothing: ready only once all of it is set up.
+  trap discard EXIT
+  echo "$b" > "$w/from"
+  mount_layers "$VERSIONS/$b" "$w/l" || die "cannot mount $b"
+  (cd "$w/l" && mount -t overlay -o lowerdir="$lower",upperdir="$w/upper",workdir="$w/work" \
+    sunairies-txn "$root") || die "cannot set up the writable layer"
+  # What maintainer scripts expect, and the packages apt downloaded (the
+  # same path inside).
+  mount --rbind /dev "$root/dev"; mount --make-rslave "$root/dev"
+  mount -t proc proc "$root/proc"
+  mount --rbind /sys "$root/sys"; mount --make-rslave "$root/sys"
+  mount -t tmpfs -o mode=0755 tmpfs "$root/run"
+  mount -t tmpfs -o mode=1777 tmpfs "$root/tmp"
+  mkdir -p /var/cache/apt/archives "$root/var/cache/apt/archives"
+  mount --bind /var/cache/apt/archives "$root/var/cache/apt/archives"
+  cp /etc/resolv.conf "$root/run/resolv.conf" 2>/dev/null || true
+  # With this machine's users and groups (sunairies.sh: accounts_in).
+  accounts_in "$root" "$w/accounts"
+  # Services are not started in there (they start at the next start).
+  printf '#!/bin/sh\nexit 101\n' > "$root/usr/sbin/policy-rc.d"
+  chmod 755 "$root/usr/sbin/policy-rc.d"
+  dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' --admindir="$root/var/lib/dpkg" \
+    | awk '$1 ~ /^ii/ { print $2 }' | sort > "$w/before"
+  trap - EXIT
+  touch "$w/ready"
+}
+
+run_dpkg() {
+  [ -e "$w/ready" ] || begin
+  # Package files outside apt's cache (dpkg -i ./x.deb through a frontend)
+  # are copied in and named by their path inside.
+  n=0
+  for a; do
+    shift
+    case "$a" in
+      /var/cache/apt/archives/*) ;;
+      *) if [ -f "$a" ]; then
+           n=$((n + 1)); mkdir -p "$root/run/sunairies-files/$n"; cp "$a" "$root/run/sunairies-files/$n/"
+           a=/run/sunairies-files/$n/${a##*/}
+         fi ;;
+    esac
+    set -- "$@" "$a"
+  done
+  SUNAIRIES_BUILD=1 exec chroot "$root" /usr/bin/dpkg.debian "$@"
+}
+
+end() {
+  [ -e "$w/ready" ] || { [ ! -d "$w" ] || discard; exit 0; }
+  b=$(cat "$w/from")
+  if [ -n "$(chroot "$root" /usr/bin/dpkg.debian --audit 2>/dev/null)" ]; then
+    discard
+    die "the package change did not finish; nothing changed"
+  fi
+  # As after a package change on Debian: units translated, apt's own record
+  # of which packages were asked for (it keeps that outside dpkg) kept with
+  # the version.
+  SUNAIRIES_BUILD=1 chroot "$root" /bin/sh -c '
+    [ -x /usr/bin/systemctl ] && /usr/bin/systemctl daemon-reload >/dev/null 2>&1
+    [ -x /usr/lib/sunairies/default-apps ] && /usr/lib/sunairies/default-apps; :'
+  cp /var/lib/apt/extended_states "$root/var/lib/apt/extended_states" 2>/dev/null || true
+  accounts_out "$root" "$w/accounts"
+  rm -f "$root/usr/sbin/policy-rc.d"
+  dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' --admindir="$root/var/lib/dpkg" \
+    | awk '$1 ~ /^ii/ { print $2 }' | sort > "$w/after"
+  added=$(comm -13 "$w/before" "$w/after")
+  removed=$(comm -23 "$w/before" "$w/after")
+  # Left mounted: the root itself (nothing writes to it now; save_layer reads
+  # the new kernel from it, if any).
+  umount_under "$root"
+  v=$(save_layer "$b" "$w" "local: package change (on $b)") || { discard; die "cannot save the change"; }
+  discard
+  # Its packages are in the version now (apt-get clean, as sunairies-layer).
+  rm -f /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/*.deb
+  sunairies-stage "$v"
+  # Packages added or removed are kept across OS updates, as with apt.
+  pkgs=$ETC/packages
+  mkdir -p "$ETC"; touch "$pkgs"
+  for p in $added; do grep -qx "$p" "$pkgs" || echo "$p" >> "$pkgs"; done
+  for p in $removed; do grep -vx "$p" "$pkgs" > "$pkgs.new" || true; mv "$pkgs.new" "$pkgs"; done
+  cp "$pkgs" "$VERSIONS/$v/packages"
+  sunairies-apply "$v" || say "$v starts at the next restart"
+  say "SunairiesOS $v: the package change is ready (undo: sunairies-rollback)"
+}
+
+case "${1:-}" in
+  begin) begin ;;
+  dpkg) shift; run_dpkg "$@" ;;
+  end) end ;;
+  *) die "usage: $prog begin | dpkg ARG... | end" ;;
+esac

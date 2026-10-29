@@ -1,0 +1,96 @@
+#!/bin/sh
+# sunairies-apply - use a staged version's programs now, before restarting
+#
+#   sunairies-apply VERSION
+#   sunairies-apply --undo
+#
+# Writes the files VERSION changed in /usr, and its package database, into
+# the running system, the way dpkg does on Debian: programs and libraries
+# work right away, and desktops (GNOME, KDE, Xfce, ...) see new applications,
+# icons and file types as they appear, since they watch for exactly that.
+# Everything else (/etc, services) changes at the next start, when VERSION
+# boots for real.
+#
+# The running /usr stays read-only; these writes go, through a mount only
+# this command sees, into a layer above it that the initramfs empties at
+# every start ($STORE/applied).
+#
+# Only for a version made on top of the running one (sunairies-layer: what
+# apt does): a different OS image needs the restart. --undo puts the running
+# version's files back (sunairies-rollback does this too).
+set -eu
+# Its mounts are its own, and go away with it.
+[ -n "${SUNAIRIES_APPLY_NS:-}" ] || SUNAIRIES_APPLY_NS=1 exec unshare -m --propagation private "$0" "$@"
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+state=/run/sunairies/applied     # the version applied now; none: the booted one
+
+b=$(booted)
+[ -n "$b" ] || die "not running SunairiesOS"
+case "${1:-}" in
+  --undo) v=$b ;;
+  ""|-*) die "usage: sunairies-apply VERSION | --undo" ;;
+  *) v=$1 ;;
+esac
+now=$(cat "$state" 2>/dev/null || echo "$b")
+[ "$v" != "$now" ] || exit 0
+[ -d "$VERSIONS/$v" ] || die "no version $v"
+# Its layers must start with the running version's: then the only difference
+# is what was added on top.
+n=$(wc -l < "$VERSIONS/$b/layers")
+head -n "$n" "$VERSIONS/$v/layers" | cmp -s - "$VERSIONS/$b/layers" \
+  || die "$v is not made on top of the running $b; it starts at the next restart"
+[ "$(findmnt -no SOURCE /usr)" = sunairies-usr ] \
+  || die "this start has no layer for live changes; $v starts at the next restart"
+
+w=$(mktemp -d /run/sunairies/apply.XXXXXX)
+# Unmount first, and remove nothing while anything is still mounted there:
+# $w/usr is the running /usr, writable.
+cleanup() {
+  awk -v p="$w/" 'index($5, p) == 1 { print $5 }' /proc/self/mountinfo | sort -r \
+    | while read -r m; do umount "$m"; done
+  grep -qF " $w/" /proc/self/mountinfo || rm -rf "$w"
+}
+trap cleanup EXIT
+mount_version "$VERSIONS/$v" "$w/v" || die "cannot mount $v"
+mkdir -p "$w/usr" "$w/l"
+mount --bind /usr "$w/usr" && mount -o remount,bind,rw "$w/usr" || die "cannot write to /usr"
+
+# Every path the layers above the running version touch: those of $v, and
+# those of what is applied now (going from one to the other changes both).
+{ tail -n +"$((n + 1))" "$VERSIONS/$v/layers"
+  [ "$now" = "$b" ] || tail -n +"$((n + 1))" "$VERSIONS/$now/layers" 2>/dev/null || true
+} | sort -u > "$w/layers"
+: > "$w/paths"
+while read -r id; do
+  [ -n "$id" ] || continue
+  mount -t erofs -o ro "$LAYERS/$id.erofs" "$w/l" 2>/dev/null \
+    || mount -t erofs -o ro,loop "$LAYERS/$id.erofs" "$w/l" || die "cannot mount layer $id"
+  (cd "$w/l" && find usr var/lib/dpkg -mindepth 1 2>/dev/null >> "$w/paths" || true)
+  umount "$w/l"
+done < "$w/layers"
+LC_ALL=C sort -u -o "$w/paths" "$w/paths"
+
+# put PREFIX DEST: make each listed path under PREFIX in DEST what it is in
+# $v: copied (a new file, so running programs keep the old one, as dpkg
+# replaces files), or removed.
+put() {
+  src=$w/v/root/$1
+  sed -n "s|^$1/||p" "$w/paths" | while IFS= read -r f; do
+    # dpkg's locks: held by whoever is changing packages now.
+    case "$1/$f" in var/lib/dpkg/lock|var/lib/dpkg/lock-frontend|var/lib/dpkg/triggers/Lock) continue ;; esac
+    if [ -e "$src/$f" ] || [ -L "$src/$f" ]; then echo "$f"; else echo "$f" >&3; fi
+  done > "$w/copy" 3> "$w/gone"
+  (cd "$2" && xargs -r -d '\n' rm -rf -- < "$w/gone")
+  [ -s "$w/copy" ] || return 0
+  tar -C "$src" --numeric-owner --xattrs --xattrs-include='*' --no-recursion \
+      --verbatim-files-from -T "$w/copy" -cf - \
+    | tar -C "$2" --numeric-owner --xattrs --xattrs-include='*' -xpf -
+}
+# Recorded first: if this stops halfway, --undo still knows what to put back.
+[ "$v" = "$b" ] || echo "$v" > "$state"
+put usr "$w/usr"
+# The package database too (dpkg -l, apt list --installed); the initramfs
+# drops this machine's copy of it at every start.
+put var/lib/dpkg /var/lib/dpkg
+
+[ "$v" != "$b" ] || rm -f "$state"

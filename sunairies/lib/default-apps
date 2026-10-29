@@ -1,0 +1,51 @@
+#!/bin/sh
+# default-apps - the system's default applications, as Debian chose them
+#
+# Debian picks the default web browser with an alternative (x-www-browser:
+# Firefox ESR above Konqueror and Chromium, by priority), but desktops do not
+# read alternatives: they take the default from mimeapps.list, and without
+# one KDE, GNOME and Xfce each pick the first of the browsers they find,
+# which changes when a package adds files beside them. This writes Debian's
+# choice where all of them read it (the freedesktop.org default applications,
+# /usr/share/applications/mimeapps.list: below each user's own choice).
+#
+# Run after every package change (apt's DPkg::Post-Invoke inside an image
+# build or a new version, sunairies-txn) and at the end of the image build.
+set -eu
+# On the running system /usr is the version's: changed only by making a new one.
+[ ! -e /run/sunairies/booted ] || [ -n "${SUNAIRIES_BUILD:-}" ] || exit 0
+apps=/usr/share/applications
+out=$apps/mimeapps.list
+
+# The .desktop file that runs PROGRAM.
+desktop_for() {
+  want=$(readlink -f "$1") || return 1
+  for f in "$apps"/*.desktop; do
+    exe=$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$f" | head -1)
+    [ -n "$exe" ] || continue
+    case "$exe" in /*) ;; *) exe=$(command -v "$exe" 2>/dev/null) || continue ;; esac
+    [ "$(readlink -f "$exe" 2>/dev/null)" = "$want" ] && { basename "$f"; return 0; }
+  done
+  return 1
+}
+
+# A list some package ships is its own: left alone.
+[ ! -e "$out" ] || grep -q '^# SunairiesOS' "$out" || exit 0
+browser=$(update-alternatives --query x-www-browser 2>/dev/null | sed -n 's/^Value: //p')
+web=""
+[ -z "$browser" ] || web=$(desktop_for "$browser") || web=""
+if [ -z "$web" ]; then
+  rm -f "$out"
+  exit 0
+fi
+cat > "$out.new" <<EOF
+# SunairiesOS: Debian's default applications (x-www-browser), for every
+# desktop. Written by /usr/lib/sunairies/default-apps after each package
+# change; your own choice (~/.config/mimeapps.list) comes first.
+[Default Applications]
+x-scheme-handler/http=$web
+x-scheme-handler/https=$web
+text/html=$web
+application/xhtml+xml=$web
+EOF
+mv "$out.new" "$out"

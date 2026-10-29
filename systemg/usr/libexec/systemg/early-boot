@@ -1,0 +1,58 @@
+#!/bin/sh
+# SystemG early boot: what systemd does before sysinit.target.
+# Run once by dinit's `early` service.
+
+mountpoint -q /proc || mount -t proc -o nosuid,nodev,noexec proc /proc
+mountpoint -q /sys  || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mountpoint -q /dev  || mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev
+mountpoint -q /run  || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mkdir -p /dev/pts /dev/shm
+mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts /dev/pts
+mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mountpoint -q /sys/fs/cgroup || mount -t cgroup2 -o nosuid,nodev,noexec cgroup2 /sys/fs/cgroup 2>/dev/null
+
+# Device nodes of modules that load on first use (/dev/net/tun, /dev/fuse,
+# /dev/uinput, ...), as systemd's kmod-static-nodes.service makes them:
+# opening the node loads the module. (Rootless podman's networking needs tun.)
+kmod static-nodes --format=tmpfiles 2>/dev/null | while read -r type path mode _ _ _ dev; do
+  case "$type" in c*|b*) ;; *) continue ;; esac
+  [ -e "$path" ] && continue
+  mkdir -p "${path%/*}"
+  mknod -m "$mode" "$path" "${type%%[!cb]*}" "${dev%%:*}" "${dev##*:}"
+done
+
+# Mounts propagate between namespaces, as systemd sets it up at boot:
+# rootless containers (podman) and some sandboxes rely on it.
+mount --make-rshared / 2>/dev/null
+
+mount -o remount,rw / 2>/dev/null
+# A root that stays read-only (an immutable system; erofs even reports the
+# remount as done) gets scratch space where systemd would put it (tmp.mount),
+# and where udisks mounts.
+if findmnt -no OPTIONS / | tr , '\n' | grep -qx ro; then
+  mountpoint -q /tmp   || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+  mountpoint -q /media || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /media
+fi
+mount -a -t nonfs,nonfs4,nocifs,nosmbfs,noceph 2>/dev/null
+swapon -a 2>/dev/null
+
+mkdir -p /run/lock /run/user /var/log/systemg
+chmod 1777 /run/lock
+: > /run/utmp && chgrp utmp /run/utmp 2>/dev/null && chmod 664 /run/utmp
+
+# Deliberately NOT creating /run/systemd/system: it means "systemd is PID 1",
+# and elogind refuses to run under it while GNOME and libsystemd would try
+# systemd-only D-Bus APIs. Package scripts reach SystemG through the
+# invoke-rc.d/service wrappers and the apt hook instead (as on Devuan).
+rm -rf /run/systemd/system
+
+# Directories for activation sockets, which dinit binds before the service
+# runs (systemd creates these itself). Listed by `systemctl daemon-reload`.
+if [ -r /etc/dinit.d/systemg-env/socket-dirs ]; then
+  while IFS= read -r d; do [ -n "$d" ] && mkdir -p "$d"; done < /etc/dinit.d/systemg-env/socket-dirs
+fi
+
+hostname -F /etc/hostname 2>/dev/null
+[ -s /etc/machine-id ] || cat /proc/sys/kernel/random/uuid | tr -d - > /etc/machine-id
+ip link set lo up 2>/dev/null
+exit 0

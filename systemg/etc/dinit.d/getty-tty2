@@ -1,0 +1,6 @@
+# SystemG: login on the second console (Ctrl+Alt+F2 in noVNC), free even when the login screen holds tty1.
+type = process
+command = /sbin/agetty --noclear tty2 linux
+restart = true
+waits-for = sysinit
+

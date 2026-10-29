@@ -1,0 +1,16 @@
+#!/bin/sh -e
+# Start eudev's udevd and coldplug devices (SystemG; port of Debian udev's).
+PREREQS=""
+prereqs() { echo "$PREREQS"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+if [ -w /sys/kernel/uevent_helper ]; then
+  echo > /sys/kernel/uevent_helper
+fi
+
+/usr/sbin/udevd --daemon --resolve-names=never
+
+udevadm trigger --type=subsystems --action=add
+udevadm trigger --type=devices --action=add
+udevadm settle || true
+# udevd keeps running for out-of-band events (e.g. USB) until init-bottom.

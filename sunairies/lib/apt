@@ -1,0 +1,89 @@
+#!/bin/sh
+# apt, apt-get and dpkg on SunairiesOS (installed over Debian's with
+# dpkg-divert; Debian's own are /usr/bin/<name>.debian).
+#
+# Everything that only reads or downloads is Debian's tool, unchanged:
+# apt search/show/list/policy/update/download, dpkg -l/-L/-S/-s, ...
+#
+# Anything that changes the installed system runs, unchanged, as a new
+# version instead (sunairies-layer): the root filesystem is read-only, and
+# every change can be undone. Its programs work right away (sunairies-apply);
+# the whole new version starts at the next restart.
+# Packages installed or removed this way are kept in /etc/sunairies/packages,
+# so updates of the OS keep them.
+#
+# Outside a running SunairiesOS (an image build, sunairies-layer's own
+# containers) this is Debian's tool and nothing else.
+self=${0##*/}
+real=/usr/bin/$self.debian
+[ -x "$real" ] || real=/usr/bin/$self.distrib
+if [ ! -e /run/sunairies/booted ] || [ -n "${SUNAIRIES_BUILD:-}" ]; then
+  exec "$real" "$@"
+fi
+
+# Does this command change the system?
+changes=""
+if [ "$self" = dpkg ]; then
+  for a; do
+    case "$a" in
+      -i|--install|-r|--remove|-P|--purge|--unpack|--configure|-a|--pending|--triggers-only) changes=1 ;;
+      -[!-]*i*|-[!-]*r*|-[!-]*P*) changes=1 ;;
+    esac
+  done
+else
+  cmd="" skip=""
+  for a; do
+    if [ -n "$skip" ]; then skip=""; continue; fi
+    case "$a" in
+      -o|-c|-t|-a|--option|--config-file|--target-release|--host-architecture) skip=1 ;;
+      -*) ;;
+      *) cmd=$a; break ;;
+    esac
+  done
+  case "$cmd" in
+    install|reinstall|remove|purge|upgrade|full-upgrade|dist-upgrade|autoremove|autopurge|build-dep|satisfy|dselect-upgrade|markauto|unmarkauto)
+      changes=1 ;;
+  esac
+fi
+# dpkg run by a program that changes packages through apt's library
+# (PackageKit for Discover and GNOME Software, Synaptic, ...; apt marks it
+# with DPKG_FRONTEND_LOCKED): one of the dpkg runs of one change, which
+# sunairies-txn makes a new version of. While that change is open, every
+# dpkg run of the program goes there: it holds the package database.
+if [ "$self" = dpkg ] && [ -n "${DPKG_FRONTEND_LOCKED:-}" ] \
+   && { [ -n "$changes" ] || [ -e /run/sunairies/data/sunairies/txn.part/ready ]; }; then
+  exec sunairies-txn dpkg "$@"
+fi
+[ -n "$changes" ] || exec "$real" "$@"
+
+[ "$(id -u)" = 0 ] || { echo "$self: are you root? (the change makes a new SunairiesOS version)" >&2; exit 100; }
+v=$(sunairies-layer "$self" "$@") || exit 100
+sunairies-stage "$v"
+
+# Remember what was asked for, so that updates keep it.
+pkgs=/etc/sunairies/packages
+mkdir -p /etc/sunairies; touch "$pkgs"
+if [ "$self" != dpkg ]; then
+  case "$cmd" in
+    install|remove|purge)
+      seen=""
+      for a; do
+        [ -n "$seen" ] || { [ "$a" = "$cmd" ] && seen=1; continue; }
+        case "$a" in -*|*/*|*.deb) continue ;; esac
+        name=${a%%[=:]*}
+        if [ "$cmd" = install ]; then
+          grep -qx "$name" "$pkgs" || echo "$name" >> "$pkgs"
+        else
+          grep -vx "$name" "$pkgs" > "$pkgs.new" || true; mv "$pkgs.new" "$pkgs"
+        fi
+      done ;;
+  esac
+fi
+# The list belongs to the version too, so a rollback restores it.
+cp "$pkgs" "/run/sunairies/data/sunairies/versions/$v/packages" 2>/dev/null || true
+# Its programs work now; the rest (configuration, services) at the next start.
+if sunairies-apply "$v" 2>/dev/null; then
+  echo "$self: done (SunairiesOS $v): programs are ready now; services and settings it changed start after a restart. Undo: sunairies-rollback" >&2
+else
+  echo "$self: done (SunairiesOS $v): it starts at the next restart. Undo: sunairies-rollback" >&2
+fi

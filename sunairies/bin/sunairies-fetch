@@ -1,0 +1,104 @@
+#!/bin/sh
+# sunairies-fetch - make a SunairiesOS version from an image
+#
+#   sunairies-fetch IMAGE            pull IMAGE with podman
+#   sunairies-fetch --oci DIR        an OCI image layout (podman save --format oci-dir)
+#   sunairies-fetch --rootfs DIR     a root directory, as one layer (first install)
+#   sunairies-fetch --erofs FILE     an erofs image of a root, as one layer, as is
+#                                    (the installer: the ISO's root)
+#       [--image REF] [--image-id ID] [--base-image-id ID]
+#                                    what to record as its origin
+#
+# Prints the version's ID. Only layers that are not in the store yet are
+# converted. If a version of the same image already exists, prints that one
+# and changes nothing. The version is not booted: see sunairies-stage.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+
+oci="" rootfs="" erofs="" image="" base_id="" id=""
+case "${1:-}" in
+  --oci) oci=${2:?}; shift 2 ;;
+  --rootfs) rootfs=${2:?}; shift 2 ;;
+  --erofs) erofs=${2:?}; shift 2 ;;
+  -*|"") die "usage: $prog IMAGE | --oci DIR | --rootfs DIR | --erofs FILE" ;;
+  *) image=$1; shift ;;
+esac
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image) image=$2; shift 2 ;;
+    --image-id) id=$2; shift 2 ;;
+    --base-image-id) base_id=$2; shift 2 ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+init_store
+
+if [ -z "$oci" ] && [ -z "$rootfs" ] && [ -z "$erofs" ]; then
+  id=$(podman pull -q "$image" | tail -1)
+  [ -n "$id" ] || die "podman pull $image failed"
+  for v in $(versions); do
+    if [ "$(cat "$VERSIONS/$v/base-image-id" 2>/dev/null)" = "$id" ]; then
+      echo "$v"; exit 0
+    fi
+  done
+  base_id=$id
+fi
+
+v=$(new_version_id)
+part=$VERSIONS/$v.part
+rm -rf "$VERSIONS"/*.part "$LAYERS"/*.part   # anything an interrupted run left
+mkdir -p "$part"
+trap 'rm -rf "$part" "$LAYERS"/*.part' EXIT
+
+if [ -n "$erofs" ]; then
+  l=$(sha256sum "$erofs" | cut -c1-64)
+  [ -f "$LAYERS/$l.erofs" ] || { cp "$erofs" "$LAYERS/$l.erofs.part" && mv "$LAYERS/$l.erofs.part" "$LAYERS/$l.erofs"; }
+  echo "$l" > "$part/layers"
+  m=$(mktemp -d)
+  mount_version "$part" "$m" || { umount_version "$m"; die "cannot mount $erofs"; }
+  k=$(ls "$m/root"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+  [ -n "$k" ] && cp "$k" "$part/vmlinuz" && cp "$m/root/boot/initrd.img-${k##*/vmlinuz-}" "$part/initrd.img"
+  umount_version "$m"
+  [ -f "$part/vmlinuz" ] || die "$erofs has no kernel in /boot"
+elif [ -n "$rootfs" ]; then
+  tmp=$LAYERS/rootfs.erofs.part
+  mkfs.erofs --quiet -zlz4 "$tmp" "$rootfs"
+  l=$(sha256sum "$tmp" | cut -c1-64)
+  mv "$tmp" "$LAYERS/$l.erofs"
+  echo "$l" > "$part/layers"
+  k=$(ls "$rootfs"/boot/vmlinuz-* | sort -V | tail -1)
+  cp "$k" "$part/vmlinuz"
+  cp "$rootfs/boot/initrd.img-${k##*/vmlinuz-}" "$part/initrd.img"
+else
+  if [ -z "$oci" ]; then
+    oci=$STORE/oci.part
+    rm -rf "$oci"
+    podman save -q --format oci-dir -o "$oci" "$id"
+  fi
+  m=$(jq -r '.manifests[0].digest' "$oci/index.json" | cut -d: -f2)
+  # New layers in parallel (one per CPU); lz4 is several times faster to make
+  # than lz4hc, and as fast to read.
+  jq -r '.layers[].digest' "$oci/blobs/sha256/$m" | cut -d: -f2 > "$part/layers"
+  while read -r l; do
+    [ -f "$LAYERS/$l.erofs" ] || echo "$l"
+  done < "$part/layers" | xargs -r -P "$(nproc)" -I{} sh -c \
+    'mkfs.erofs --quiet -zlz4 --tar=f --aufs --ungzip "$1/{}.erofs.part" "$2/blobs/sha256/{}" && mv "$1/{}.erofs.part" "$1/{}.erofs"' \
+    _ "$LAYERS" "$oci"
+  [ "$oci" = "$STORE/oci.part" ] && rm -rf "$oci"
+  # Its kernel and initramfs.
+  m=$(mktemp -d)
+  mount_version "$part" "$m" || { umount_version "$m"; die "cannot mount the new version's layers"; }
+  k=$(ls "$m/root"/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+  if [ -z "$k" ]; then umount_version "$m"; die "the image has no kernel in /boot"; fi
+  cp "$k" "$part/vmlinuz"
+  cp "$m/root/boot/initrd.img-${k##*/vmlinuz-}" "$part/initrd.img"
+  umount_version "$m"
+fi
+
+echo "${image:-local}" > "$part/image"
+[ -n "$id" ] && echo "$id" > "$part/image-id"
+echo "${base_id:-$id}" > "$part/base-image-id"
+[ -n "$id" ] && podman tag "$id" "$REPO:$v"
+mv "$part" "$VERSIONS/$v"
+trap - EXIT
+echo "$v"

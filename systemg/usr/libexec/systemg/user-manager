@@ -1,0 +1,41 @@
+#!/bin/sh
+# SystemG per-user manager (systemd --user): a user-mode dinit that provides
+# the session D-Bus and runs the user units Debian ships (PipeWire,
+# WirePlumber, portals, ...). Runs as the user; started by user-session.
+set -u
+rt=$XDG_RUNTIME_DIR
+dir=$rt/systemg/dinit.d
+log=$rt/systemg/manager.log
+mkdir -p "$dir/boot.d"
+
+# The session bus, at the standard per-user address. This replaces
+# dbus-user-session (which needs systemd): GLib and libdbus find
+# $XDG_RUNTIME_DIR/bus by themselves. --print-address tells dinit it is ready.
+cat > "$dir/dbus" <<EOT
+type = process
+command = /usr/bin/dbus-daemon --session --address=unix:path=$rt/bus --nofork --nopidfile --print-address=3
+ready-notification = pipefd:3
+restart = true
+EOT
+
+# default.target: the session bus plus whatever Debian/the user enabled.
+cat > "$dir/boot" <<EOT
+type = internal
+depends-on = dbus
+waits-for.d = boot.d
+EOT
+
+# Translate user units (/usr/lib/systemd/user, /etc/systemd/user, ~/.config/systemd/user).
+systemctl --user daemon-reload >>"$log" 2>&1
+
+extra=""
+[ -d "$HOME/.config/dinit.d" ] && extra="--services-dir $HOME/.config/dinit.d"
+# shellcheck disable=SC2086
+setsid dinit --user --services-dir "$dir" $extra --socket-path "$rt/dinitctl" --quiet boot \
+  </dev/null >>"$log" 2>&1 &
+
+# Return once the session bus is up, so the desktop session that starts next
+# finds it, as it would under systemd.
+i=0
+while [ ! -S "$rt/bus" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+exit 0

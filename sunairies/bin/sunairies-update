@@ -1,0 +1,26 @@
+#!/bin/sh
+# sunairies-update - get the newest image, keep this machine's packages
+#
+#   sunairies-update [IMAGE]    (default: /etc/sunairies/image)
+#
+# Stages the result for the next start; prints its version. Exits 0 without
+# output when already up to date.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+img=${1:-$(cat "$ETC/image" 2>/dev/null || true)}
+[ -n "$img" ] || die "which image? (set it in $ETC/image)"
+v=$(sunairies-fetch "$img")
+cur=$(current)
+[ "$v" = "$cur" ] && exit 0
+# Same base as the current version: nothing new.
+[ "$(cat "$VERSIONS/$v/base-image-id")" = "$(cat "$VERSIONS/$cur/base-image-id" 2>/dev/null)" ] && exit 0
+if [ -s "$ETC/packages" ]; then
+  # shellcheck disable=SC2046
+  # Unattended: keep this machine's changed configuration files, as Debian's
+  # unattended-upgrades does, instead of asking.
+  v=$(sunairies-layer --from "$v" apt-get install -y \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold $(cat "$ETC/packages"))
+fi
+[ -f "$ETC/packages" ] && cp "$ETC/packages" "$VERSIONS/$v/packages"
+sunairies-stage "$v"
+echo "$v"

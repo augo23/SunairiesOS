@@ -1,0 +1,120 @@
+#!/bin/sh
+# Build eudev the way Alpine Linux does, as .debs that replace Debian's udev
+# and libudev1 (which are built from the systemd source tree).
+#
+#   build-eudev OUT_DIR
+#
+#   eudev_<ver>_<arch>.deb      udevd, udevadm, rules, hwdb, helpers
+#   libeudev1_<ver>_<arch>.deb  libudev.so.1 (same ABI as Debian's libudev1)
+#
+# Alpine's package recipe (aports main/eudev, branch ALPINE_BRANCH) decides
+# the version, the source, the patches and their sha512sums; this script only
+# builds that for Debian. Alpine's binaries are for musl, so they are not used
+# directly. To update: change ALPINE_BRANCH to a newer Alpine stable branch.
+#
+# Both packages Provide the Debian package they replace, at Debian's version,
+# so packages depending on "udev" or "libudev1 (>= N)" install unchanged.
+# Runs on Debian (stable) as root, with network.
+set -eu
+ALPINE_BRANCH=${ALPINE_BRANCH:-3.24-stable}   # (debian.lock pins the exact commit)
+# ALPINE_REF (an aports commit, from debian.lock) pins the recipe exactly.
+APORTS=https://raw.githubusercontent.com/alpinelinux/aports/${ALPINE_REF:-$ALPINE_BRANCH}/main/eudev
+out=${1:?usage: build-eudev OUT_DIR}
+here=$(cd "$(dirname "$0")" && pwd)
+export DEBIAN_FRONTEND=noninteractive
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+
+apt-get update -q
+apt-get install -y -q --no-install-recommends curl ca-certificates build-essential \
+  gperf pkg-config patch libkmod-dev libblkid-dev
+arch=$(dpkg --print-architecture)
+triplet=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+# The Debian versions these stand in for (Provides).
+udev_ver=$(apt-cache show --no-all-versions udev | sed -n 's/^Version: //p')
+libudev_ver=$(apt-cache show --no-all-versions libudev1 | sed -n 's/^Version: //p')
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+
+# Alpine's recipe, read as data (never run).
+curl -fsSLo APKBUILD "$APORTS/APKBUILD"
+pkgver=$(sed -n 's/^pkgver=//p' APKBUILD)
+pkgrel=$(sed -n 's/^pkgrel=//p' APKBUILD)
+patches=$(sed -n '/^source="/,/"/p' APKBUILD | grep -o '[A-Za-z0-9._-]*\.patch')
+sed -n '/^sha512sums="/,/"/p' APKBUILD | grep -E '^[0-9a-f]{128}  ' > sha512sums
+version=$pkgver-alpine$pkgrel+systemg1
+echo "eudev $pkgver-r$pkgrel from Alpine $ALPINE_BRANCH; patches:" $patches
+
+curl -fsSLo "eudev-$pkgver.tar.gz" \
+  "https://github.com/eudev-project/eudev/releases/download/v$pkgver/eudev-$pkgver.tar.gz"
+for p in $patches; do curl -fsSLo "$p" "$APORTS/$p"; done
+# Every file Alpine lists must match Alpine's checksum; anything else stops here.
+for f in "eudev-$pkgver.tar.gz" $patches; do
+  grep "  $f\$" sha512sums | sha512sum -c - || { echo "!! $f: no or wrong sha512 in Alpine's APKBUILD"; exit 1; }
+done
+
+tar -xzf "eudev-$pkgver.tar.gz"
+cd "eudev-$pkgver"
+for p in $patches; do patch -p1 < "../$p"; done
+# Alpine's configure flags, with Debian's /usr-merged, multiarch paths.
+# Manual pages need docbook-xsl; Debian's man pages for udev stay accurate.
+./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
+  --bindir=/usr/bin --sbindir=/usr/sbin \
+  --libdir="/usr/lib/$triplet" --with-rootprefix=/usr --with-rootlibdir="/usr/lib/$triplet" \
+  --with-rootlibexecdir=/usr/lib/udev --enable-kmod --enable-blkid --disable-manpages
+make -j"$(nproc)"
+root=$work/eudev
+make install DESTDIR="$root"
+# As Alpine's eudev-hwids: the hwdb sources belong under /usr/lib/udev.
+[ -d "$root/etc/udev/hwdb.d" ] && mkdir -p "$root/usr/lib/udev" && mv "$root/etc/udev/hwdb.d" "$root/usr/lib/udev/hwdb.d"
+
+# initramfs-tools hooks, as Debian's udev ships them (eudev/initramfs-tools).
+mkdir -p "$root/usr/share"
+cp -a "$here/initramfs-tools" "$root/usr/share/initramfs-tools"
+
+# Split: the library in libeudev1, everything else in eudev.
+lib=$work/libeudev1
+mkdir -p "$lib/usr/lib/$triplet"
+mv "$root/usr/lib/$triplet"/libudev.so.1* "$lib/usr/lib/$triplet/"
+rm -rf "$root/usr/lib/$triplet" "$root/usr/include" "$root/usr/share/pkgconfig"
+
+# Alpine's eudev.trigger and eudev-hwids.trigger: reload rules and rebuild the
+# hwdb whenever eudev or another package changes them.
+mkdir -p "$root/DEBIAN"
+cat > "$root/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+udevadm hwdb --update || true
+if [ -S /run/udev/control ]; then udevadm control --reload || true; fi
+EOF
+chmod 0755 "$root/DEBIAN/postinst"
+printf 'interest-noawait /usr/lib/udev/hwdb.d\ninterest-noawait /usr/lib/udev/rules.d\n' > "$root/DEBIAN/triggers"
+(cd "$root" && find etc -type f 2>/dev/null | sed 's|^|/|') > "$root/DEBIAN/conffiles"
+[ -s "$root/DEBIAN/conffiles" ] || rm "$root/DEBIAN/conffiles"
+
+deb() { # DIR NAME DESCRIPTION CONTROL-LINE...
+  d=$1 name=$2 desc=$3; shift 3
+  mkdir -p "$d/DEBIAN"
+  {
+    echo "Package: $name"
+    echo "Version: $version"
+    echo "Architecture: $arch"
+    echo "Maintainer: SystemG <systemg@localhost>"
+    echo "Section: admin"
+    echo "Priority: important"
+    echo "Homepage: https://github.com/eudev-project/eudev"
+    for l in "$@"; do echo "$l"; done
+    echo "Installed-Size: $(du -sk "$d" | cut -f1)"
+    echo "Description: $desc"
+  } > "$d/DEBIAN/control"
+  dpkg-deb --root-owner-group -b "$d" "$out/${name}_${version}_$arch.deb"
+}
+deb "$lib" libeudev1 "eudev's libudev, built as Alpine does (SystemG: replaces libudev1)" \
+  "Depends: libc6" "Multi-Arch: same" \
+  "Provides: libudev1 (= $libudev_ver)" "Conflicts: libudev1" "Replaces: libudev1"
+deb "$root" eudev "eudev device manager, built as Alpine does (SystemG: replaces udev)" \
+  "Depends: libc6, libkmod2, libblkid1, libeudev1 (= $version)" \
+  "Provides: udev (= $udev_ver)" "Conflicts: udev" "Replaces: udev"
+ls -l "$out"

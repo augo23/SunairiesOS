@@ -1,0 +1,21 @@
+#!/bin/sh
+# sunairies-stage - boot VERSION next, once
+#
+#   sunairies-stage VERSION
+#
+# The next start boots VERSION. If it then runs healthy, sunairies-commit
+# makes it current; if it is not committed by the start after that, GRUB
+# boots the current version again. Staging the current version unstages.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+v=${1:?usage: sunairies-stage VERSION}
+[ -d "$VERSIONS/$v" ] || die "no version $v"
+if [ "$v" = "$(current)" ]; then env_unset staged tried; exit 0; fi
+# The users and groups it brings (a new image's) that this machine lacks.
+if [ -e /run/sunairies/booted ]; then
+  m=$(mktemp -d)
+  if mount_version "$VERSIONS/$v" "$m"; then accounts_add "$m/root"; fi
+  umount_version "$m"
+fi
+env_set staged="$v"
+env_unset tried

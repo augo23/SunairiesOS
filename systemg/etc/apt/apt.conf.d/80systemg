@@ -1,0 +1,3 @@
+// SystemG: after packages are installed or upgraded, translate their unit
+// files and start newly enabled services (systemd does this in postinst).
+DPkg::Post-Invoke { "if [ -x /usr/libexec/systemg/apt-hook ]; then /usr/libexec/systemg/apt-hook; fi"; };

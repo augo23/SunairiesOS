@@ -1,0 +1,14 @@
+# SystemG replaces systemd on this system. Like Devuan, apt must never
+# install anything built from Debian's systemd source package, whatever
+# depends on it:
+#   service manager, logind, journal, ...  -> SystemG (dinit), elogind
+#   udev, libudev1                          -> eudev, libeudev1 (Alpine's)
+#   libpam-systemd                          -> libpam-elogind
+#   resolved, timesyncd, homed, boot, ...   -> nothing / standalone tools
+#
+# Still allowed, as on Devuan: libsystemd0 (the client library many
+# packages link to; SystemG answers its calls), systemd-standalone-sysusers
+# and systemd-standalone-tmpfiles (one-shot tools packages call at install).
+Package: systemd systemd-sysv systemd-container systemd-journal-remote systemd-coredump systemd-timesyncd systemd-tests libpam-systemd libnss-myhostname libnss-mymachines libnss-resolve libnss-systemd libsystemd-dev libsystemd-shared udev libudev1 libudev-dev systemd-standalone-shutdown systemd-oomd systemd-userdbd systemd-homed systemd-boot systemd-boot-tools systemd-boot-efi systemd-ukify systemd-resolved systemd-dev systemd-repart systemd-cryptsetup
+Pin: release *
+Pin-Priority: -1

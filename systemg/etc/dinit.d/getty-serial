@@ -1,0 +1,7 @@
+# SystemG: login on the serial console, as systemd's getty generator does
+# (serial-getty@ on the kernel's console=): ttyS0 on PCs, ttyAMA0 on ARM, ...
+# A login on the first serial port (servers, VMs).
+type = process
+command = /usr/libexec/systemg/serial-getty
+restart = true
+waits-for = sysinit

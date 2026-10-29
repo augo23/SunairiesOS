@@ -1,0 +1,26 @@
+#!/bin/sh
+# sunairies-check - is this boot healthy?
+#
+# Exits 0 when the boot target and the display manager (if one is set up)
+# have started, and every executable in /etc/sunairies/check.d exits 0.
+# Waits up to 2 minutes for services; says on stderr what failed.
+set -u
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+started() { # SERVICE
+  i=0
+  until dinitctl is-started "$1" >/dev/null 2>&1; do
+    i=$((i + 1)); [ $i -gt 120 ] && { echo "$prog: $1 did not start" >&2; return 1; }
+    sleep 1
+  done
+}
+started boot || exit 1
+if [ -s /etc/X11/default-display-manager ]; then
+  dm=$(basename "$(cat /etc/X11/default-display-manager)")
+  [ "$dm" = gdm3 ] && dm=gdm
+  started "$dm" || exit 1
+fi
+for c in "$ETC"/check.d/*; do
+  [ -x "$c" ] || continue
+  "$c" || { echo "$prog: ${c##*/} failed" >&2; exit 1; }
+done
+exit 0

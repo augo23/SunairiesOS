@@ -1,0 +1,22 @@
+#!/bin/sh
+# sunairies-rollback - go back to the current version
+#
+# Drops the staged version (or, while running one that is not committed yet,
+# the one running): the next start boots the current version.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+stg=$(staged) b=$(booted) cur=$(current)
+sunairies-apply --undo
+if [ -n "$stg" ]; then
+  env_unset staged tried
+  [ "$stg" = "$b" ] || rm -rf "${VERSIONS:?}/$stg"
+  # Packages added with it are not wanted any more: the current version's list.
+  # (None kept with it: it has none.)
+  if [ -f "$VERSIONS/$cur/packages" ]; then cp "$VERSIONS/$cur/packages" "$ETC/packages"
+  else : > "$ETC/packages"; fi
+  say "dropped $stg; $cur starts next"
+elif [ -n "$b" ] && [ "$b" != "$cur" ]; then
+  say "$cur starts next"
+else
+  die "nothing to roll back: $cur is the only version"
+fi

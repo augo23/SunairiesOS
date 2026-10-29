@@ -1,0 +1,7 @@
+# SystemG: the system D-Bus (Debian's dbus.service expects systemd socket activation).
+# Ready once it listens (--print-address on fd 3), as systemd waits for it:
+# services that depend on it never find the bus socket missing.
+type = process
+command = /bin/sh -c "mkdir -p /run/dbus && exec /usr/bin/dbus-daemon --system --nofork --nopidfile --print-address=3"
+ready-notification = pipefd:3
+depends-on = sysinit

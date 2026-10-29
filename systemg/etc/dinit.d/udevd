@@ -1,0 +1,4 @@
+# SystemG: eudev (eudev), standing in for systemd-udevd.service.
+type = process
+command = /usr/sbin/udevd
+depends-on = early

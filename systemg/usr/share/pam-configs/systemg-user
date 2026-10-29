@@ -1,0 +1,8 @@
+Name: SystemG per-user service manager (replaces pam_systemd's systemd --user)
+Default: yes
+Priority: -10
+Session-Interactive-Only: yes
+Session-Type: Additional
+Session:
+	optional	pam_exec.so quiet /usr/libexec/systemg/user-session
+	optional	pam_env.so readenv=0 user_readenv=0 conffile=/usr/share/systemg/pam_env.conf

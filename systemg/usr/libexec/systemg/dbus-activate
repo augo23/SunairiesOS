@@ -1,0 +1,25 @@
+#!/bin/sh
+# SystemG: D-Bus activation through dinit (what systemd does for
+# SystemdService=). dbus-daemon runs this, as written into the service files
+# `systemctl daemon-reload` puts in /usr/local/share/dbus-1/system-services
+# (or $XDG_RUNTIME_DIR/dbus-1/services), instead of starting a second copy of
+# a service dinit already runs.
+#
+#   dbus-activate DINIT-SERVICE BUS-NAME
+svc=${1:?service} name=${2:?bus name}
+if [ "$(id -u)" = 0 ] && [ -z "${DBUS_STARTER_BUS_TYPE:-}" -o "${DBUS_STARTER_BUS_TYPE:-}" = system ]; then
+  ctl="dinitctl" bus=--system
+else
+  ctl="dinitctl --user --socket-path ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dinitctl" bus=--session
+fi
+$ctl --no-wait start "$svc" >/dev/null 2>&1 || { echo "dbus-activate: dinit could not start $svc" >&2; exit 1; }
+# Stay until the service owns its name: dbus-daemon counts an earlier exit of
+# the process it launched as a failed activation.
+i=0
+while [ $i -lt 120 ]; do
+  dbus-send $bus --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus.NameHasOwner "string:$name" 2>/dev/null | grep -q 'boolean true' && exit 0
+  sleep 0.25; i=$((i + 1))
+done
+echo "dbus-activate: $svc did not take $name within 30s" >&2
+exit 1

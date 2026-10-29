@@ -1,0 +1,12 @@
+# SystemG: logind (org.freedesktop.login1) provided by elogind, the logind
+# extracted from systemd. Sessions, seats, device access for desktops.
+# Units that ask for systemd-logind.service are mapped onto this service.
+# Ready once elogind says so (READY=1, as systemd-logind's Type=notify):
+# display managers ordered after it find logind there, and offer shutdown,
+# restart and sleep.
+type = process
+ready-notification = pipevar:SYSTEMG_READY_FD
+command = /usr/libexec/systemg/sg-notify-proxy /usr/libexec/systemg/start-elogind
+depends-on = dbus
+restart = true
+logfile = /var/log/systemg/elogind.log

@@ -1,0 +1,7 @@
+# SystemG: org.freedesktop.systemd1 on the system bus (what systemd's PID 1
+# answers there): the Manager's properties, e.g. Virtualization.
+type = process
+command = /usr/libexec/systemg/compatd
+depends-on = dbus
+restart = true
+logfile = /var/log/systemg/compatd.log

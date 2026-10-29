@@ -1,0 +1,6 @@
+# SystemG: sysinit.target. Every generated service depends on this, like
+# systemd's DefaultDependencies=yes.
+type = internal
+depends-on = early
+depends-on = local-fs
+waits-for = udev-trigger

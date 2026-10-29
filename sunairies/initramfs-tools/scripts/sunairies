@@ -1,0 +1,145 @@
+# boot=sunairies: assemble the SunairiesOS root filesystem (sunairies).
+#
+#   /      the version's layers (sunairies.version=ID), stacked, read-only
+#   /usr   overlay: those + data:sunairies/applied, emptied here at every
+#          start; only sunairies-apply writes to it (what apt installs works
+#          right away), and /usr itself stays read-only
+#   /etc   overlay: the image's /etc + the writable layer data:/etc
+#   /var   overlay: the image's /var + data:/var
+#   /home  /root   the data partition's home/ and root/
+#   /var/lib/containers   its containers/ (podman storage: no overlay below it)
+#
+# The data partition is the one labelled sunairies-data; it stays mounted at
+# /run/sunairies/data.
+
+sunairies_panic() {
+  panic "sunairies: $*"
+}
+
+# util-linux mount (hooks/sunairies), whatever /bin/mount is.
+sg_mount() {
+  /bin/sunairies-mount "$@"
+}
+
+# File-backed erofs (Linux 6.12+), or through a loop device.
+erofs_mount() { # IMAGE DIR
+  sg_mount -t erofs -o ro "$1" "$2" 2>/dev/null \
+    || sg_mount -t erofs -o ro,loop "$1" "$2" \
+    || sunairies_panic "cannot mount layer ${1##*/}"
+}
+
+# The live system (the ISO, sunairies.live): its root read-only from the ISO
+# or USB stick, with a writable layer in RAM; a "live" user logs in by
+# itself, and sunairies-install puts the system on a disk.
+live_root() {
+  media=/run/sunairies/media
+  mkdir -p "$media" /run/sunairies/live-ro /run/sunairies/live-rw
+  dev="" i=0
+  while [ $i -lt 240 ]; do
+    dev=$(blkid -l -o device -t LABEL=SUNAIRIES_LIVE 2>/dev/null || true)
+    [ -n "$dev" ] && break
+    sleep 0.25; i=$((i + 1))
+  done
+  [ -n "$dev" ] || sunairies_panic "no SunairiesOS live medium (label SUNAIRIES_LIVE)"
+  sg_mount -t iso9660 -o ro "$dev" "$media" || sunairies_panic "cannot mount $dev"
+  erofs_mount "$media/sunairies/live/root.erofs" /run/sunairies/live-ro
+  # Its own tmpfs: /run's is small, and noexec.
+  sg_mount -t tmpfs -o mode=0755,size=60% sunairies-live /run/sunairies/live-rw
+  mkdir -p /run/sunairies/live-rw/upper /run/sunairies/live-rw/work
+  sg_mount -t overlay -o lowerdir=/run/sunairies/live-ro,upperdir=/run/sunairies/live-rw/upper,workdir=/run/sunairies/live-rw/work \
+    sunairies-root "${rootmnt}" || sunairies_panic "cannot set up the live root"
+  chroot "${rootmnt}" /usr/sbin/useradd -m -s /bin/bash -c "Live session" -G sudo,audio,video,netdev live
+  chroot "${rootmnt}" /usr/bin/passwd -q -d live
+  echo "live ALL=(ALL) NOPASSWD: ALL" > "${rootmnt}/etc/sudoers.d/live"
+  if [ -f "${rootmnt}/etc/gdm3/daemon.conf" ]; then
+    printf '[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=live\n' > "${rootmnt}/etc/gdm3/daemon.conf"
+  fi
+  echo live > /run/sunairies/live
+}
+
+mountroot() {
+  for x in $(cat /proc/cmdline); do
+    [ "$x" = sunairies.live ] && { live_root; return; }
+  done
+  ver=""
+  for x in $(cat /proc/cmdline); do
+    case "$x" in sunairies.version=*) ver=${x#sunairies.version=} ;; esac
+  done
+  [ -n "$ver" ] || sunairies_panic "no sunairies.version= on the kernel command line"
+
+  data=/run/sunairies/data
+  mkdir -p "$data" /run/sunairies/layers
+  dev="" i=0
+  while [ $i -lt 120 ]; do
+    dev=$(blkid -l -o device -t LABEL=sunairies-data 2>/dev/null || true)
+    [ -n "$dev" ] && break
+    sleep 0.25; i=$((i + 1))
+  done
+  [ -n "$dev" ] || sunairies_panic "no partition labelled sunairies-data"
+  e2fsck -p "$dev" >/dev/null 2>&1 || [ $? -le 1 ] || sunairies_panic "e2fsck $dev failed"
+  sg_mount -t ext4 -o rw,noatime "$dev" "$data" || sunairies_panic "cannot mount $dev"
+
+  g=$data/sunairies/versions/$ver
+  [ -s "$g/layers" ] || sunairies_panic "version $ver not found on $dev"
+  # Shell builtins only: this initramfs has klibc's few tools, not busybox
+# (no grep, no cp).
+  n=0 first=""
+  while read -r id; do
+    [ -n "$id" ] || continue
+    n=$((n + 1)); [ -n "$first" ] || first=$id
+  done < "$g/layers"
+  if [ "$n" -eq 1 ]; then
+    # One layer (e.g. a first install): it is the root.
+    id=$first
+    erofs_mount "$data/sunairies/layers/$id.erofs" "${rootmnt}"
+  else
+    lower="" i=0
+    while read -r id; do
+      [ -n "$id" ] || continue
+      d=/run/sunairies/layers/$i
+      mkdir -p "$d"
+      erofs_mount "$data/sunairies/layers/$id.erofs" "$d"
+      lower="$i${lower:+:$lower}"
+      i=$((i + 1))
+    done < "$g/layers"
+    # Relative layer names: the kernel takes at most 256 bytes per mount
+    # option (fsconfig), which full paths of many layers exceed.
+    (cd /run/sunairies/layers && sg_mount -t overlay -o ro,lowerdir="$lower" sunairies-root "${rootmnt}") \
+      || sunairies_panic "cannot stack the layers of $ver"
+  fi
+
+  # The layer sunairies-apply writes into: what it holds is in the next
+  # version already, so each start begins without it. Read-only here;
+  # sunairies-apply writes through a mount of its own.
+  applied=$data/sunairies/applied
+  [ -e "$applied" ] && { nuke "$applied" 2>/dev/null || rm -rf "$applied"; }
+  mkdir -p "$applied/upper" "$applied/work"
+  sg_mount -t overlay -o lowerdir="${rootmnt}/usr",upperdir="$applied/upper",workdir="$applied/work" \
+    sunairies-usr "${rootmnt}/usr" || sunairies_panic "cannot mount /usr"
+  sg_mount -o remount,bind,ro "${rootmnt}/usr" || sunairies_panic "cannot make /usr read-only"
+
+  # The package database is the version's: a copy in the machine's /var
+  # layer would hide the one each new version brings.
+  [ -d "$data/var/upper/lib/dpkg" ] && rm -rf "$data/var/upper/lib/dpkg"
+  for d in etc var; do
+    mkdir -p "$data/$d/upper" "$data/$d/work"
+    sg_mount -t overlay -o lowerdir="${rootmnt}/$d",upperdir="$data/$d/upper",workdir="$data/$d/work" \
+      "sunairies-$d" "${rootmnt}/$d" || sunairies_panic "cannot mount /$d"
+  done
+  # The image's own /etc/hostname and /etc/hosts (a container build cannot
+  # write those), unless this machine has its own (data:etc/upper).
+  for f in hostname hosts; do
+    if [ -f "${rootmnt}/usr/share/sunairies/etc/$f" ] && [ ! -e "$data/etc/upper/$f" ]; then
+      cat "${rootmnt}/usr/share/sunairies/etc/$f" > "${rootmnt}/etc/$f"   # klibc has no cp
+    fi
+  done
+  for d in home root; do
+    mkdir -p "$data/$d"
+    sg_mount --bind "$data/$d" "${rootmnt}/$d" || sunairies_panic "cannot mount /$d"
+  done
+  # podman's storage needs a real filesystem, not the /var overlay.
+  mkdir -p "$data/containers" "${rootmnt}/var/lib/containers"
+  sg_mount --bind "$data/containers" "${rootmnt}/var/lib/containers" \
+    || sunairies_panic "cannot mount /var/lib/containers"
+  echo "$ver" > /run/sunairies/booted
+}

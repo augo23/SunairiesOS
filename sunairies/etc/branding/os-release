@@ -1,0 +1,9 @@
+PRETTY_NAME="SunairiesOS @VERSION@"
+NAME="SunairiesOS"
+VERSION_ID="@VERSION@"
+VERSION="@VERSION@ (based on Debian @DEBIAN@)"
+VERSION_CODENAME=@CODENAME@
+ID=sunairiesos
+ID_LIKE=debian
+LOGO=sunairiesos-logo
+ANSI_COLOR="1;37"

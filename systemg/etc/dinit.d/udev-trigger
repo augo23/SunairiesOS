@@ -1,0 +1,4 @@
+# SystemG: coldplug devices (systemd-udev-trigger.service + udev-settle).
+type = scripted
+command = /bin/sh -c "udevadm trigger --type=subsystems --action=add; udevadm trigger --type=devices --action=add; udevadm settle --timeout=30 || echo udev-trigger: devices not settled after 30s, continuing >&2; exit 0"
+depends-on = udevd

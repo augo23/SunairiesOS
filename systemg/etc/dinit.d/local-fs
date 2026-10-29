@@ -1,0 +1,3 @@
+# SystemG: local-fs.target. /etc/fstab is mounted by `early`.
+type = internal
+depends-on = early

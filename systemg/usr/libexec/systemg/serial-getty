@@ -1,0 +1,10 @@
+#!/bin/sh
+# agetty on the kernel's serial console (the last console= that is not a
+# virtual terminal), like systemd-getty-generator. No serial console: idle,
+# so dinit does not restart this over and over.
+dev=""
+for c in $(cat /sys/class/tty/console/active 2>/dev/null); do
+  case "$c" in tty[0-9]*) ;; *) dev=$c ;; esac
+done
+[ -n "$dev" ] && [ -c "/dev/$dev" ] || exec sleep infinity
+exec /sbin/agetty -L 115200 "$dev" vt100

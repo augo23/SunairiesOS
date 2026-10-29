@@ -1,0 +1,17 @@
+#!/bin/sh -e
+# Stop the initramfs udevd and hand /dev to the real root (SystemG; port of
+# Debian udev's). The real system's udevd (dinit service udevd) takes over.
+PREREQS=""
+prereqs() { echo "$PREREQS"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+udevadm settle --timeout=60
+udevadm control --exit
+
+mount -n -o move /dev "${rootmnt:?}/dev" || mount -n --move /dev "${rootmnt}/dev"
+if command -v nuke >/dev/null; then
+  nuke /dev
+else
+  rm -rf /dev
+fi
+ln -s "${rootmnt}/dev" /dev

@@ -1,0 +1,5 @@
+# SystemG: mount kernel filesystems, remount / rw, create /run/systemd/system.
+type = scripted
+command = /usr/libexec/systemg/early-boot
+restart = false
+options = starts-rwfs

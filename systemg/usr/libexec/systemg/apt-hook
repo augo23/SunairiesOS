@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run by apt after dpkg (see /etc/apt/apt.conf.d/80systemg): what
+# `systemctl daemon-reload` + `deb-systemd-invoke start` do in maintainer
+# scripts under systemd. Translate new or changed units, then start services
+# that are enabled at boot but not running yet.
+[ -S /run/dinitctl ] || exit 0
+# An immutable system that makes package changes in a root of their own
+# (SunairiesOS: sunairies-layer, sunairies-txn) translates units there; the
+# running system's /etc keeps none of its own.
+[ -e /run/sunairies/booted ] && [ -z "${SUNAIRIES_BUILD:-}" ] && exit 0
+/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || true
+for link in /etc/dinit.d/boot.d/*; do
+  [ -e "$link" ] || continue
+  svc=$(basename "$link")
+  /usr/bin/dinitctl is-started "$svc" >/dev/null 2>&1 || /usr/bin/dinitctl --no-wait start "$svc" >/dev/null 2>&1 || true
+done
+exit 0

@@ -1,0 +1,9 @@
+// SunairiesOS: a package change made through apt's library (PackageKit for
+// Discover and GNOME Software, Synaptic, unattended-upgrades) becomes a new
+// version, as one made with the apt command (sunairies-txn). Nothing outside
+// a running SunairiesOS.
+DPkg::Pre-Invoke { "if [ -x /usr/bin/sunairies-txn ]; then /usr/bin/sunairies-txn begin; fi"; };
+DPkg::Post-Invoke { "if [ -x /usr/bin/sunairies-txn ]; then /usr/bin/sunairies-txn end; fi"; };
+// In a version being made (an image build, sunairies-layer): Debian's default
+// applications for every desktop (default-apps).
+DPkg::Post-Invoke { "if [ -x /usr/lib/sunairies/default-apps ]; then /usr/lib/sunairies/default-apps; fi"; };

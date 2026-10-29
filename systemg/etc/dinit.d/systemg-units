@@ -1,0 +1,6 @@
+# SystemG: translate systemd unit files into dinit services on every boot,
+# so units installed or changed while offline are picked up.
+type = scripted
+command = /usr/bin/systemctl daemon-reload
+depends-on = early
+logfile = /var/log/systemg/systemg-units.log

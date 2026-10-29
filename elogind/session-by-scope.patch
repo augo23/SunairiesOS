@@ -1,0 +1,27 @@
+From: SystemG
+Subject: Find a session by its scope name when looking up a PID
+
+Debian's libsystemd0-compatible cgroups layout puts sessions in
+user.slice/user-UID.slice/session-ID.scope, but nothing fills session_units,
+so GetSessionByPID fails for every process except a session leader.
+---
+--- a/src/login/logind-core.c
++++ b/src/login/logind-core.c
+@@ -396,6 +396,17 @@
+                 r = cg_pidref_get_unit(pid, &unit);
+                 if (r >= 0)
+                         s = hashmap_get(m->session_units, unit);
++                /* session_start_cgroup() creates session-ID.scope but never
++                 * registers it in session_units, so the lookup above only ever
++                 * finds nothing: look the session up by the ID in its scope
++                 * name instead. Without this, only a session's leader belongs
++                 * to it (rootless Xorg, gnome-shell, ... get NoSessionForPID). */
++                if (!s) {
++                        _cleanup_free_ char *id = NULL;
++
++                        if (cg_pid_get_session(pid->pid, &id) >= 0)
++                                s = hashmap_get(m->sessions, id);
++                }
+ #else // 0
+                 log_debug_elogind("Searching session for PID %d", pid->pid);
+                 r = cg_pid_get_session(pid->pid, &session_name);

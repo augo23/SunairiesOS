@@ -1,0 +1,78 @@
+#!/bin/sh
+# sunairies-layer - run a command on top of a version; the result is a new one
+#
+#   sunairies-layer [--from VERSION] COMMAND [ARG...]
+#
+# Runs COMMAND, unchanged and interactive, in VERSION's root filesystem
+# (default: the staged version, else the running one), and keeps what it changed as one more
+# layer: a new version, printed on stdout. Files named in the arguments
+# (./x.deb) are made available to it. Nothing is staged: see sunairies-stage.
+#
+# The root is VERSION's read-only layers with an empty writable layer on top
+# (overlayfs); podman runs COMMAND in it (podman run --rootfs). What COMMAND
+# changes lands in that top layer, which becomes the new version's last
+# layer. Nothing else is copied, however big the system is.
+#
+# apt-get install htop here is Debian's apt-get install htop: same resolver,
+# same maintainer scripts, same prompts. Daemons are not started inside
+# (policy-rc.d), and the service manager's units are refreshed afterwards.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+
+from=""
+if [ "${1:-}" = --from ]; then from=$2; shift 2; fi
+[ $# -gt 0 ] || die "usage: $prog [--from VERSION] COMMAND [ARG...]"
+# By default on top of the version that starts next: a second install before
+# restarting must keep the first.
+from=${from:-$(staged)}
+from=${from:-$(booted)}
+[ -n "$from" ] && [ -d "$VERSIONS/$from" ] || die "no version ${from:-booted}"
+
+# Work on the data partition: the new layer can be as big as the change.
+w=$STORE/layer.part
+rm -rf "$w"; mkdir -p "$w/l" "$w/upper" "$w/work" "$w/root" "$w/ctx"
+cleanup() {
+  umount "$w/root" 2>/dev/null || true
+  for d in "$w"/l/[0-9]*; do umount "$d" 2>/dev/null || true; done
+  rm -rf "$w"
+}
+trap cleanup EXIT
+# One overlay: the version's layers below, the new layer on top (an overlay
+# on the version's own overlay would stack filesystems deeper than allowed).
+mount_layers "$VERSIONS/$from" "$w/l" || die "cannot mount $from"
+(cd "$w/l" && mount -t overlay -o lowerdir="$lower",upperdir="$w/upper",workdir="$w/work" \
+  sunairies-layer "$w/root") || die "cannot set up the writable layer"
+# With this machine's users and groups (sunairies.sh: accounts_in).
+accounts_in "$w/root" "$w/accounts"
+
+# Files the command names are copied in, and named by their path inside.
+n=0
+for a; do
+  shift
+  if [ -f "$a" ]; then
+    n=$((n + 1)); mkdir -p "$w/ctx/$n"; cp "$a" "$w/ctx/$n/"
+    a=/run/sunairies-ctx/$n/${a##*/}
+  fi
+  set -- "$@" "$a"
+done
+
+say "running $1 on $from"
+tty=""; [ -t 0 ] && tty=-it
+# Output to stderr: stdout is only the new version, for scripts.
+# shellcheck disable=SC2016
+# (--rootfs: the root directory takes the image's place, just before the command.)
+podman run --rm $tty --network host --security-opt label=disable \
+  -v "$w/ctx:/run/sunairies-ctx:ro" -e SUNAIRIES_BUILD=1 -e DEBIAN_FRONTEND -e TERM \
+  --rootfs "$w/root" /bin/sh -c '
+    printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
+    case "$1" in apt|apt-get|aptitude) apt-get update -qq ;; esac
+    "$@"; rc=$?
+    [ -x /usr/bin/systemctl ] && /usr/bin/systemctl daemon-reload >/dev/null 2>&1
+    rm -f /usr/sbin/policy-rc.d; apt-get clean; rm -rf /var/lib/apt/lists/*
+    exit $rc' sh "$@" >&2 || die "$1 failed; nothing changed"
+
+accounts_out "$w/root" "$w/accounts"
+# What a container runtime leaves behind is not part of the change.
+rm -f "$w/upper/etc/hostname" "$w/upper/etc/hosts" "$w/upper/etc/resolv.conf"
+say "saving the change as a new version"
+save_layer "$from" "$w" "local: $* (on $from)"

@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+"""make-theme ROOT OUT - SunairiesOS's desktop theme: Debian's, without its logo
+
+ROOT is an unpacked desktop-base package. Its default theme (the one it
+gives the highest desktop-theme priority: Ceratopsian in Debian 13) is copied
+to OUT with every layer of its artwork that Debian labels as its logo
+(swirl, logo) taken out: the wallpaper, lock screen and login backgrounds,
+which KDE, GNOME, Xfce and the rest take through desktop-base. Its own
+paths and its name are changed to OUT's and SunairiesOS's; the artist's
+credit and license stay.
+
+Fails when a background has no logo layer to take out: a later Debian
+artwork labels it differently, and this needs to learn the new label
+rather than ship the logo.
+"""
+import json
+import re
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+LOGO = re.compile(r"swirl|logo", re.I)
+INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
+NAMESPACES = {
+    "": "http://www.w3.org/2000/svg",
+    "inkscape": INKSCAPE,
+    "sodipodi": "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "cc": "http://creativecommons.org/ns#",
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+}
+
+
+def default_theme(root: Path) -> str:
+    """The theme desktop-base's postinst gives the highest desktop-theme priority."""
+    script = (root / "DEBIAN/postinst").read_text()
+    block = script.split("desktop-theme", 1)[1].split("EOF", 2)[1]
+    themes = re.findall(r"^(\S+)\s+(\d+)\s*$", block, re.M)
+    return max(themes, key=lambda t: int(t[1]))[0]
+
+
+def strip_logo(svg: Path) -> int:
+    tree = ET.parse(svg)
+    removed = 0
+    for parent in tree.iter():
+        for child in list(parent):
+            if LOGO.search(child.get(f"{{{INKSCAPE}}}label", "")):
+                parent.remove(child)
+                removed += 1
+    tree.write(svg, xml_declaration=True, encoding="UTF-8")
+    return removed
+
+
+def main(root: Path, out: Path) -> None:
+    for prefix, uri in NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+    name = default_theme(root)
+    src = root / f"usr/share/desktop-base/{name}-theme"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    for part in ("wallpaper", "lockscreen", "login"):
+        if (src / part).is_dir():
+            shutil.copytree(src / part, out / part, symlinks=False)
+    # Debian's own login background without the logo, where it has one, also
+    # as the one with it (login screens use either).
+    nologo = out / "login/background-nologo.svg"
+    if nologo.exists():
+        shutil.copyfile(nologo, out / "login/background.svg")
+
+    for svg in sorted(out.rglob("*.svg")):
+        if strip_logo(svg) == 0 and svg.parent.name == "images":
+            sys.exit(f"make-theme: no logo layer found in {svg.relative_to(out)}")
+    for xml in out.rglob("*.xml"):
+        xml.write_text(xml.read_text().replace(f"/usr/share/desktop-base/{name}-theme", str(out)))
+    for meta in out.rglob("metadata.json"):
+        data = json.loads(meta.read_text())
+        data.setdefault("KPlugin", {})["Name"] = "SunairiesOS"
+        meta.write_text(json.dumps(data, indent=4) + "\n")
+    print(f"make-theme: SunairiesOS theme from Debian's {name}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit("usage: make-theme ROOT OUT")
+    main(Path(sys.argv[1]), Path(sys.argv[2]))

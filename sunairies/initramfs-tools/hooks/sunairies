@@ -1,0 +1,15 @@
+#!/bin/sh -e
+# boot=sunairies (SunairiesOS): what scripts/sunairies needs.
+PREREQS="udev"
+prereqs() { echo "$PREREQS"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+manual_add_modules erofs overlay loop ext4 isofs sr_mod cdrom usb-storage uas
+# util-linux mount (erofs, overlay, loop, bind) under its own name: busybox
+# and klibc each install a /bin/mount that lacks some of these.
+copy_exec /usr/bin/mount /bin/sunairies-mount
+copy_exec /usr/sbin/losetup /sbin/losetup
+copy_exec /usr/sbin/blkid /sbin/blkid
+copy_exec /usr/sbin/e2fsck /sbin/e2fsck

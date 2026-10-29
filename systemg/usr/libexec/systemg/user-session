@@ -1,0 +1,31 @@
+#!/bin/sh
+# SystemG: start the per-user service manager at login.
+#
+# This is what systemd's pam_systemd + user@UID.service do. Called by
+# pam_exec (see /usr/share/pam-configs/systemg-user) as root when a session
+# opens; the manager itself runs as the user and outlives this script.
+[ "${PAM_TYPE:-}" = open_session ] || exit 0
+user=${PAM_USER:-}
+[ -n "$user" ] || exit 0
+uid=$(id -u "$user" 2>/dev/null) || exit 0
+gid=$(id -g "$user")
+home=$(getent passwd "$user" | cut -d: -f6)
+rt=/run/user/$uid
+
+# elogind normally creates the runtime directory; make sure it exists.
+if [ ! -d "$rt" ]; then
+  mkdir -p "$rt" && chown "$uid:$gid" "$rt" && chmod 0700 "$rt"
+fi
+
+# One manager per user, shared by all of their sessions.
+if [ -S "$rt/dinitctl" ] && \
+   setpriv --reuid="$uid" --regid="$gid" --init-groups -- env XDG_RUNTIME_DIR="$rt" HOME="$home" \
+     dinitctl --user list >/dev/null 2>&1; then
+  exit 0
+fi
+
+exec setpriv --reuid="$uid" --regid="$gid" --init-groups -- env -i \
+  HOME="$home" USER="$user" LOGNAME="$user" XDG_RUNTIME_DIR="$rt" \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" \
+  /usr/libexec/systemg/user-manager

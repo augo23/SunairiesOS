@@ -1,0 +1,54 @@
+#!/bin/sh
+# Start elogind (in the foreground, for dinit) from wherever this Debian
+# release installs it. Its messages go to /var/log/systemg/elogind.log, and
+# when it fails, the reason is also printed on the screen and the serial
+# console: without logind there is no login screen, so it must be visible.
+LOG=/var/log/systemg/elogind.log
+
+# An elogind dbus-daemon started on its own: follow it rather than fail on
+# "already running", and let dinit take over when it exits.
+if pid=$(pgrep -xo elogind) && [ -n "$pid" ]; then
+  echo "elogind already running (pid $pid); following it"
+  while kill -0 "$pid" 2>/dev/null; do sleep 2; done
+  exit 0
+fi
+
+# The daemon itself, an ELF program: never /etc/init.d/elogind, the
+# sysvinit script that only prints its usage when run without "start".
+is_daemon() {
+  [ -f "$1" ] && [ -x "$1" ] && [ "$(head -c 4 "$1" 2>/dev/null | tail -c 3)" = ELF ]
+}
+bin=""
+for b in /usr/libexec/elogind/elogind /usr/libexec/elogind /usr/lib/elogind/elogind \
+         /lib/elogind/elogind /usr/sbin/elogind \
+         $(dpkg -L elogind 2>/dev/null | grep -E '/elogind$' | grep -v '^/etc/'); do
+  is_daemon "$b" && { bin=$b; break; }
+done
+if [ -z "$bin" ]; then
+  echo "elogind is not installed; logind (and desktops) unavailable"
+  exit 1
+fi
+
+# A pid file left by an elogind that died makes the next one refuse to start.
+if [ -f /run/elogind.pid ] && ! kill -0 "$(cat /run/elogind.pid)" 2>/dev/null; then
+  rm -f /run/elogind.pid
+fi
+
+# Log to stderr (dinit's logfile) instead of syslog, which may not be running.
+export SYSTEMD_LOG_TARGET=console SYSTEMD_LOG_COLOR=0
+echo "--- $(date '+%F %T') starting $bin"
+"$bin" &
+child=$!
+trap 'kill -TERM $child 2>/dev/null' TERM INT
+while :; do
+  wait "$child"; rc=$?
+  kill -0 "$child" 2>/dev/null || break   # wait returned because of a signal
+done
+if [ "$rc" -ne 0 ]; then
+  msg=$(tail -n 12 "$LOG" 2>/dev/null | sed 's/^/  /')
+  for c in /dev/console /dev/ttyS0; do
+    printf '\nSystemG: elogind exited with status %s. Its last messages:\n%s\n(full log: %s)\n' \
+      "$rc" "$msg" "$LOG" > "$c" 2>/dev/null
+  done
+fi
+exit "$rc"

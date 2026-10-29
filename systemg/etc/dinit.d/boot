@@ -1,0 +1,12 @@
+# SystemG: the default boot target (systemd's multi-user.target).
+# Services enabled with `systemctl enable` are linked into boot.d/.
+type = internal
+depends-on = sysinit
+waits-for = dbus
+waits-for = compatd
+waits-for = elogind
+waits-for = getty-tty1
+waits-for = getty-serial
+waits-for = getty-tty2
+waits-for = systemg-units
+waits-for.d = boot.d

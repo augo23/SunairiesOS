@@ -1,0 +1,20 @@
+#!/bin/sh
+# sunairies-status - the state of this system, as key=value lines
+#
+#   booted=   the version running now
+#   current=  the version that starts by default
+#   staged=   the version that starts next, once (empty: none)
+#   image=    where the running version came from
+#   packages= packages added on this machine (/etc/sunairies/packages)
+#   version=ID LAYERS IMAGE   one line per version in the store
+set -u
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+b=$(booted)
+echo "booted=$b"
+echo "current=$(current)"
+echo "staged=$(staged)"
+echo "image=$(cat "$VERSIONS/$b/image" 2>/dev/null)"
+echo "packages=$(tr '\n' ' ' < "$ETC/packages" 2>/dev/null | sed 's/ $//')"
+for v in $(versions); do
+  echo "version=$v $(wc -l < "$VERSIONS/$v/layers") $(cat "$VERSIONS/$v/image" 2>/dev/null)"
+done

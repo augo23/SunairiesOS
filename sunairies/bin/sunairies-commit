@@ -1,0 +1,27 @@
+#!/bin/sh
+# sunairies-commit - keep the version that is running, drop the others
+#
+# If the booted version was staged, it becomes current. Then every version
+# other than the current one (and a staged one, still waiting for its boot)
+# is removed, with its podman image and the layers nothing else uses.
+set -eu
+. "${SUNAIRIES_LIB:-/usr/lib/sunairies}/sunairies.sh"
+b=$(booted)
+[ -n "$b" ] || die "not booted from a SunairiesOS version"
+if [ "$b" = "$(staged)" ]; then
+  env_set current="$b"
+  env_unset staged tried
+  say "$b is now current"
+fi
+cur=$(current) stg=$(staged)
+for v in $(versions); do
+  [ "$v" = "$cur" ] || [ "$v" = "$stg" ] || [ "$v" = "$b" ] && continue
+  rm -rf "${VERSIONS:?}/$v"
+  podman rmi "$REPO:$v" >/dev/null 2>&1 || true
+  say "removed $v"
+done
+for f in "$LAYERS"/*.erofs; do
+  [ -e "$f" ] || continue
+  l=${f##*/}; l=${l%.erofs}
+  cat "$VERSIONS"/*/layers 2>/dev/null | grep -qx "$l" || rm -f "$f"
+done

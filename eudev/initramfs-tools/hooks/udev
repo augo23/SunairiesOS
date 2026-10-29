@@ -1,0 +1,43 @@
+#!/bin/sh -e
+# eudev in the initramfs (SystemG; port of Debian udev's hook): udevd finds
+# and names the disks so the root can be found by label.
+PREREQS=""
+prereqs() { echo "$PREREQS"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /usr/sbin/udevd /usr/sbin
+copy_exec /usr/bin/udevadm /usr/bin
+
+if [ -e /etc/udev/udev.conf ]; then
+  mkdir -p "$DESTDIR/etc/udev"
+  cp -p /etc/udev/udev.conf "$DESTDIR/etc/udev/"
+fi
+for hwdb in /etc/udev/hwdb.bin /usr/lib/udev/hwdb.bin; do
+  if [ -e "$hwdb" ]; then
+    mkdir -p "$DESTDIR${hwdb%/*}"
+    cp -p "$hwdb" "$DESTDIR$hwdb"
+  fi
+done
+
+mkdir -p "$DESTDIR/usr/lib/udev/rules.d/"
+for rules in 50-firmware.rules 50-udev-default.rules 60-block.rules \
+    60-persistent-storage.rules 61-persistent-storage-android.rules \
+    71-seat.rules 75-net-description.rules 80-drivers.rules; do
+  if [ -e "/etc/udev/rules.d/$rules" ]; then
+    cp -p "/etc/udev/rules.d/$rules" "$DESTDIR/usr/lib/udev/rules.d/"
+  elif [ -e "/usr/lib/udev/rules.d/$rules" ]; then
+    cp -p "/usr/lib/udev/rules.d/$rules" "$DESTDIR/usr/lib/udev/rules.d/"
+  fi
+done
+# Local rules without a packaged equivalent (persistent names and the like).
+for rules in /etc/udev/rules.d/*.rules; do
+  [ -e "$rules" ] || continue
+  [ -e "/usr/lib/udev/rules.d/${rules##*/}" ] || cp -p "$rules" "$DESTDIR/usr/lib/udev/rules.d/"
+done
+
+for program in ata_id scsi_id; do
+  [ -x "/usr/lib/udev/$program" ] && copy_exec "/usr/lib/udev/$program" /usr/lib/udev
+done
+copy_exec /usr/sbin/blkid /sbin

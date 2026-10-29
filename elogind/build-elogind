@@ -1,0 +1,42 @@
+#!/bin/sh
+# Build Debian's elogind with SystemG's patches (elogind/*.patch), as
+# .debs that replace the stock elogind and libpam-elogind.
+#
+#   build-elogind OUT_DIR [PATCH_DIR]
+#
+# Runs on Debian trixie as root; needs deb-src (added here) and network.
+set -eu
+out=${1:?usage: build-elogind OUT_DIR [PATCH_DIR]}
+patches=${2:-$(dirname "$0")}
+export DEBIAN_FRONTEND=noninteractive
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+patches=$(cd "$patches" && pwd)
+
+# Turn on deb-src for Debian's own sources (same keyring, so apt accepts it).
+if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+  sed -i '/^Types:/{/deb-src/!s/$/ deb-src/}' /etc/apt/sources.list.d/debian.sources
+elif ! grep -qs '^deb-src' /etc/apt/sources.list; then
+  sed -n 's/^deb /deb-src /p' /etc/apt/sources.list >> /etc/apt/sources.list
+fi
+apt-get update -q
+apt-get install -y -q --no-install-recommends build-essential devscripts dpkg-dev quilt fakeroot
+apt-get build-dep -y -q elogind
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+apt-get source -q elogind
+src=$(find . -mindepth 1 -maxdepth 1 -type d -name 'elogind-*' | head -1)
+cd "$src"
+
+for p in "$patches"/*.patch; do
+  cp "$p" debian/patches/
+  echo "$(basename "$p")" >> debian/patches/series
+done
+ver=$(dpkg-parsechangelog -S Version)
+DEBEMAIL=systemg@localhost DEBFULLNAME=SystemG \
+  dch -b -v "${ver}+systemg1" "SystemG: $(cd "$patches" && ls ./*.patch | tr '\n' ' ')"
+DEB_BUILD_OPTIONS="nocheck nodoc parallel=$(nproc)" dpkg-buildpackage -b -uc -us
+cp ../elogind_*.deb ../libpam-elogind_*.deb "$out/"
+ls -l "$out"

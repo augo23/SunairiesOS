@@ -1,0 +1,6 @@
+# SystemG: login on the VGA console (what noVNC shows).
+type = process
+command = /sbin/agetty --noclear tty1 linux
+restart = true
+waits-for = sysinit
+

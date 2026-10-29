@@ -28,8 +28,7 @@ than a stock Debian install:
   service manager, instead of systemd. Logins, devices and logging are
   separate, swappable programs.
 - **A read-only system.** Programs can't modify the installed OS, not even as
-  root: it's read-only layers, checked as a whole, and only replaced by a new
-  version.
+  root: it's read-only layers, only ever replaced by a whole new version.
 - **Updates you can undo.** Every update and every package change is a new
   version. One that doesn't boot healthily goes back to the previous one by
   itself.

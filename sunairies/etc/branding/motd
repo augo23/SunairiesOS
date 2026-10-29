@@ -1,5 +1,0 @@
-
-SunairiesOS @VERSION@: an immutable system. Programs come from versions of the
-OS image; `apt install` adds to a new version, `sunairies-status` shows them,
-`sunairies-rollback` undoes the last change.
-

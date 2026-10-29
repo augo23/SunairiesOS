@@ -19,7 +19,7 @@ This repository holds the parts that do that, on top of plain Debian:
 | `systemg/` | Files SystemG adds to Debian (paths as installed): the dinit services that boot the system, the apt pin that keeps systemd out, and the glue that stands in for systemd's own pieces |
 | `elogind/` | Debian's elogind, rebuilt with one patch (`session-by-scope.patch`) |
 | `eudev/` | eudev built from Alpine Linux's recipe, packaged as Debian's `udev` and `libudev1` |
-| `sunairies/` | The immutable layer: `sunairies-*` tools, the apt/dpkg wrapper, the initramfs that assembles the root, and branding |
+| `sunairies/` | The immutable layer: `sunairies-*` tools, the apt/dpkg wrapper, and the initramfs that assembles the root |
 
 The SystemG programs themselves (`systemctl`, the unit translator,
 `libsystemd` shim, D-Bus service) are in the
@@ -198,18 +198,6 @@ of standard priority or higher that isn't installed yet. That includes
 back. SunairiesOS diverts Debian's task list, again with `dpkg-divert`, and
 gives that task its own package list (`sunairies/lib/tasksel-standard`):
 Debian's, less what SystemG replaces.
-
-### 4. Branding
-
-- `/usr/lib/os-release`, `/etc/issue` and `/etc/motd` say SunairiesOS
-  (`sunairies/etc/branding/`); Debian's `os-release` is diverted.
-  `ID_LIKE=debian`, Debian's `VERSION_CODENAME` and `/etc/debian_version` are
-  unchanged, so tools that check for Debian still find it.
-- `sunairies/branding/make-theme` makes Debian's desktop artwork
-  (desktop-base) without Debian's logo. It's installed as desktop-base's own
-  `desktop-theme` alternative, at a higher priority than Debian's, so the
-  wallpaper, lock screen and login background of KDE, GNOME, Xfce and the
-  rest use it.
 
 ## License
 

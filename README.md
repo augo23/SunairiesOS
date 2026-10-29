@@ -14,7 +14,26 @@ SunairiesOS is Debian stable without systemd, as an immutable system.
   Discover, GNOME Software, Synaptic) work exactly as on Debian. Each change
   they make becomes a new read-only version.
 
-This repository holds the parts that do that, on top of plain Debian:
+## Why this repository is so small
+
+SunairiesOS isn't a new distribution built from scratch. It's Debian: the
+same packages, from the same Debian archive, at the same versions. Only three
+things are done to it:
+
+1. **systemd is removed and [SystemG](https://github.com/augo23/systemg)
+   takes its place.** SystemG (System Generic) is a systemd-compatible layer
+   on dinit, in its own repository. Add elogind for logins and eudev for
+   devices, both packaged as the Debian packages they replace.
+2. **podman is added,** set up to run without systemd. It brings OS updates
+   (as container images) and runs containers.
+3. **The system is made immutable:** the root filesystem becomes read-only
+   layers, and apt's changes become new versions instead of edits to the
+   running system.
+
+Everything else (the kernel, the desktops, the applications, security
+updates) comes from Debian, unchanged, so there's nothing else to keep here.
+What's here is only the difference:
+
 
 | Directory | What it is |
 |---|---|

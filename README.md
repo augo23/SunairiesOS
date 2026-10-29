@@ -14,6 +14,26 @@ SunairiesOS is Debian stable without systemd, as an immutable system.
   Discover, GNOME Software, Synaptic) work exactly as on Debian. Each change
   they make becomes a new read-only version.
 
+## Why
+
+Debian is one of the most trusted Linux distributions, but its PID 1 is
+systemd: one project that has grown into the init system, service manager,
+logging, logins, device management, DNS, time sync, networking, home
+directories and boot loader. SunairiesOS takes that back to the Unix
+philosophy: small tools that each do one thing, which can be read,
+understood and replaced one at a time. It's also designed to be more secure
+than a stock Debian install:
+
+- **Less code in the most privileged places.** PID 1 is dinit, a small
+  service manager, instead of systemd. Logins, devices and logging are
+  separate, swappable programs.
+- **A read-only system.** Programs can't modify the installed OS, not even as
+  root: it's read-only layers, checked as a whole, and only replaced by a new
+  version.
+- **Updates you can undo.** Every update and every package change is a new
+  version. One that doesn't boot healthily goes back to the previous one by
+  itself.
+
 ## Why this repository is so small
 
 SunairiesOS isn't a new distribution built from scratch. It's Debian: the
@@ -48,11 +68,31 @@ The SystemG programs themselves (`systemctl`, the unit translator,
 
 ## What changes in Debian
 
-Everything not listed here is Debian, unchanged: the same packages from
+This continues the three steps above, in detail. Everything not listed here is Debian, unchanged: the same packages from
 `deb.debian.org`, the same versions, maintainer scripts and configuration
 files.
 
 ### 1. No systemd: SystemG on dinit
+
+Every part of systemd a Debian system uses, and what takes its place:
+
+| systemd | On SunairiesOS |
+|---|---|
+| `systemd` as PID 1, the service manager | **dinit**, a small, separate service manager |
+| unit files (`.service`, `.socket`, `.target`) | Debian's own unit files, translated to dinit services by [SystemG](https://github.com/augo23/systemg) |
+| `systemctl` | SystemG's `systemctl`: start, stop, restart, status, enable, disable, show, list-units, daemon-reload, poweroff, reboot, ... |
+| `systemd --user` (`user@.service`) | SystemG's per-user manager, started at login (`systemg/usr/libexec/systemg/user-manager`) |
+| `dbus-user-session` | the session bus that per-user manager provides |
+| `systemd-logind`, `loginctl` | **elogind**, patched (`elogind/`), with its own `loginctl` |
+| `systemd-udevd`, `udevadm` | **eudev**, from Alpine Linux's recipe (`eudev/`) |
+| `systemd-journald`, `journalctl` | no journal: each service's output goes to its own plain-text log, `/var/log/systemg/<service>.log` (read with `less`, `tail -f`, `grep`) |
+| `sd_notify`, `sd_listen_fds`, `sd_booted` (libsystemd) | SystemG's `libsd-shim`, and `sg-notify-proxy` for `Type=notify` daemons |
+| the `org.freedesktop.systemd1` D-Bus API | SystemG's `compatd` |
+| D-Bus activation (`SystemdService=`) | through dinit (`systemg/usr/libexec/systemg/dbus-activate`) |
+| `invoke-rc.d`, `service` | routed to dinit (`systemg/usr/libexec/systemg/invoke-rc.d`) |
+| `systemd-sysusers`, `systemd-tmpfiles` | Debian's standalone versions of these one-shot tools |
+| `systemd-networkd`, `systemd-resolved` | not used: NetworkManager handles network and DNS |
+| `systemd-timesyncd`, `systemd-homed`, `systemd-boot` | not used; GRUB boots the system |
 
 **Packages from systemd's source are never installed.**
 `systemg/etc/apt/preferences.d/systemg` pins every one of them to priority -1,
